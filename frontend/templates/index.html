@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Генерация low-poly 3D</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --card: #ffffff;
+      --border: #e6e8ec;
+      --text: #1f2328;
+      --muted: #6b7280;
+      --primary: #1f6feb;
+      --primary-600: #1a5fd3;
+      --ghost: #f8fafc;
+      --ring: #93c5fd;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: Inter, system-ui, Arial, sans-serif; background: var(--bg); margin:0; color: var(--text); }
+    .container { max-width: 980px; margin: 24px auto; background: var(--card); border-radius: 16px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,.06) }
+
+    /* Header / toolbar */
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .title { margin:0; font-size: 20px; font-weight: 700; }
+    .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 14px; border-radius: 10px; font-weight: 600;
+      text-decoration: none; cursor: pointer; line-height: 1;
+      border: 1px solid transparent; user-select: none;
+    }
+    .btn:focus-visible { outline: 3px solid var(--ring); outline-offset: 2px; }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: var(--primary-600); }
+    .btn-ghost { background: var(--ghost); color: var(--text); border-color: var(--border); }
+    .btn-ghost:hover { filter: brightness(.98); }
+    .btn-outline { background: #fff; color: var(--text); border-color: var(--border); }
+    .btn-outline:hover { background: #fafafa; }
+    .icon { font-size: 16px; }
+
+    .card { border:1px solid var(--border); border-radius: 12px; padding: 12px; background:#fcfdff; }
+    label { font-size: 12px; color:#555; display:block; margin-top:8px }
+    input[type="text"], textarea { width:100%; padding:10px; border:1px solid #dfe3ea; border-radius:8px; }
+    input[type="file"] { width:100% }
+    .controls { display:grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-top:12px }
+    .muted { color: var(--muted); font-size: 12px; }
+    .loading { display:none; margin-top:12px; text-align:center; font-weight:600; }
+
+    @media (max-width: 720px) {
+      .controls { grid-template-columns: 1fr; }
+      .toolbar { gap: 8px; }
+    }
+  </style>
+  <script>
+    function showLoading(){ document.getElementById('loading').style.display='block'; }
+  </script>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1 class="title">Генерация low-poly 3D</h1>
+      <nav class="toolbar" aria-label="Действия">
+        <a class="btn btn-ghost" href="{{ url_for('history') }}" title="Открыть историю">
+          <span class="icon">📜</span><span>История</span>
+        </a>
+        <a class="btn btn-outline" href="{{ url_for('index') }}" title="Новая генерация">
+          <span class="icon">➕</span><span>Новая генерация</span>
+        </a>
+      </nav>
+    </header>
+
+    <p class="muted">
+      Если загрузите <b>картинку</b> — будет создана <b>1</b> модель.<br>
+      Если введёте <b>текст</b> — будет создано <b>3</b> варианта (seed: 52, 1337, 3407).
+    </p>
+
+    <form method="post" enctype="multipart/form-data" onsubmit="showLoading()">
+      <div class="card">
+        <label>Картинка (если используете изображение)</label>
+        <input type="file" name="image" accept="image/*" />
+        <label>Текстовый промпт (если нет картинки)</label>
+        <textarea name="prompt" rows="3" placeholder="low poly bear head with headphones, stylized, PBR"></textarea>
+      </div>
+
+      <div class="controls">
+        <div>
+          <label>Целевое число треугольников (1000–2000)</label>
+          <input type="text" name="target_face_count" value="2000" />
+        </div>
+        <div>
+          <label><input type="checkbox" name="use_remesh" /> Встроенный ремеш</label>
+        </div>
+      </div>
+
+      <div style="margin-top:12px; display:flex; gap:10px;">
+        <button class="btn btn-primary" type="submit" title="Запустить генерацию">
+          <span class="icon">🚀</span><span>Генерировать</span>
+        </button>
+      </div>
+      <div id="loading" class="loading">⏳ Генерация… пожалуйста, подождите…</div>
+    </form>
+  </div>
+</body>
+</html>

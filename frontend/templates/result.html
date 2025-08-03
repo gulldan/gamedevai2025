@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Результаты — {{ batch_id }}</title>
+  <script type="module" src="https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js"></script>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card:#fff; --border:#e6e8ec; --text:#1f2328;
+      --muted:#6b7280; --primary:#1f6feb; --primary-600:#1a5fd3; --ring:#93c5fd;
+    }
+    body { font-family: Inter, system-ui, Arial, sans-serif; background:var(--bg); margin:0; color:var(--text); }
+    .container { max-width: 1200px; margin: 24px auto; background:var(--card); border-radius:16px; padding:20px; box-shadow:0 10px 30px rgba(0,0,0,.06) }
+    header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+    .title { margin:0; font-size:20px; font-weight:700; }
+    .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    .btn { display:inline-flex; align-items:center; gap:8px; padding:10px 14px; border-radius:10px; font-weight:600; text-decoration:none; cursor:pointer; line-height:1; border:1px solid transparent; }
+    .btn:focus-visible { outline:3px solid var(--ring); outline-offset:2px; }
+    .btn-primary { background:var(--primary); color:#fff; }
+    .btn-primary:hover { background:var(--primary-600); }
+    .btn-ghost { background:#f8fafc; color:var(--text); border-color:var(--border); }
+    .btn-ghost:hover { filter:brightness(.98); }
+    .btn-outline { background:#fff; color:var(--text); border-color:var(--border); }
+    .btn-outline:hover { background:#fafafa; }
+    .icon { font-size:16px; }
+
+    .grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; }
+    .card { border:1px solid var(--border); border-radius:12px; padding:12px; background:#fcfdff; display:flex; flex-direction:column; gap:10px }
+    .row { display:flex; gap:10px; align-items:stretch; }
+    .left, .right { flex:1; }
+    .refbox { border:1px dashed #d9dde5; border-radius:10px; padding:8px; background:#fff; height:360px; display:flex; align-items:center; justify-content:center; }
+    .refbox img { max-width:100%; max-height:100%; object-fit:contain; }
+    model-viewer { width:100%; height:360px; background:#f3f4f7; border-radius:10px; }
+    .ok { color:#1a7f37; font-weight:600 }
+    .fail { color:#c62828; font-weight:600 }
+    .log { font-size:12px; color:#555; white-space:pre-line; background:#fff; border:1px solid #eceff4; border-radius:8px; padding:8px}
+    .caption { font-size:13px; color:#333 }
+    .footer { margin-top:12px; font-size:12px }
+    @media (max-width: 1024px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1 class="title">Результаты — {{ batch_id }}</h1>
+      <nav class="toolbar" aria-label="Действия">
+        <a class="btn btn-ghost" href="{{ url_for('history') }}" title="Открыть историю">
+          <span class="icon">📜</span><span>История</span>
+        </a>
+        <a class="btn btn-outline" href="{{ url_for('download_batch', batch_id=batch_id) }}" title="Скачать весь батч ZIP">
+          <span class="icon">🗂️</span><span>Скачать все (ZIP)</span>
+        </a>
+        <a class="btn btn-primary" href="{{ url_for('index') }}" title="Новая генерация">
+          <span class="icon">➕</span><span>Новая генерация</span>
+        </a>
+      </nav>
+    </header>
+
+    <div class="grid">
+      {% for it in items %}
+      <div class="card">
+        <div class="caption">
+          <b>{{ it.title }}</b>
+          {% if it.prompt %} — «{{ it.prompt }}»{% endif %}
+          {% if it.seed is not none %} <span style="color:#777;">(seed={{ it.seed }})</span>{% endif %}
+        </div>
+        <div class="row">
+          <div class="left">
+            <div class="refbox">
+              {% if it.ref_img_rel %}
+                <img src="{{ url_for('static', filename=it.ref_img_rel) }}" alt="ref">
+              {% else %}
+                <span>Нет превью</span>
+              {% endif %}
+            </div>
+          </div>
+          <div class="right">
+            {% if it.model_rel and it.model_rel.endswith('.glb') %}
+              <model-viewer src="{{ url_for('static', filename=it.model_rel) }}"
+                            camera-controls auto-rotate
+                            exposure="1.0" shadow-intensity="0.2"
+                            environment-image="neutral">
+              </model-viewer>
+            {% elif it.model_rel %}
+              <div class="refbox">
+                <div>
+                  <div>Формат: {{ it.model_rel.split('.')[-1] }} (просмотр здесь недоступен)</div>
+                  <div style="margin-top:6px;">
+                    <a class="btn btn-outline" href="{{ url_for('static', filename=it.model_rel) }}" download title="Скачать модель">
+                      <span class="icon">⬇️</span><span>Скачать</span>
+                    </a>
+                  </div>
+                </div>
+              </div>
+            {% else %}
+              <div class="refbox"><span>Нет модели</span></div>
+            {% endif %}
+          </div>
+        </div>
+
+        <div style="display:flex; gap:10px; align-items:center; justify-content:space-between;">
+          <div class="{% if it.ok %}ok{% else %}fail{% endif %}">
+            {% if it.ok %}Готово{% else %}Ошибка{% endif %}
+          </div>
+          <div>
+            <a class="btn btn-outline" href="{{ url_for('download_item', batch_id=batch_id, idx=loop.index0) }}" title="Скачать вариант ZIP">
+              <span class="icon">⬇️</span><span>ZIP варианта</span>
+            </a>
+          </div>
+        </div>
+
+        {% if it.log %}
+          <div class="log">{{ '\n'.join(it.log) }}</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="footer" style="display:flex; gap:10px; margin-top:16px;">
+      <a class="btn btn-ghost" href="{{ url_for('index') }}">⟵ Назад</a>
+    </div>
+  </div>
+</body>
+</html>
