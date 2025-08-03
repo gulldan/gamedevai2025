@@ -35,6 +35,7 @@
     .fail { color:#c62828; font-weight:600 }
     .log { font-size:12px; color:#555; white-space:pre-line; background:#fff; border:1px solid #eceff4; border-radius:8px; padding:8px}
     .caption { font-size:13px; color:#333 }
+    .timing { font-size:12px; color:#111; background:#fff; border:1px dashed #e6e8ec; border-radius:8px; padding:6px 8px; }
     .footer { margin-top:12px; font-size:12px }
     @media (max-width: 1024px) { .grid { grid-template-columns: 1fr; } }
   </style>
@@ -64,6 +65,7 @@
           {% if it.prompt %} — «{{ it.prompt }}»{% endif %}
           {% if it.seed is not none %} <span style="color:#777;">(seed={{ it.seed }})</span>{% endif %}
         </div>
+
         <div class="row">
           <div class="left">
             <div class="refbox">
@@ -97,6 +99,16 @@
             {% endif %}
           </div>
         </div>
+
+        {% if it.timings %}
+          <div class="timing">
+            ⏱️ <b>Время:</b>
+            {% if it.timings.image_gen_text %} изображение {{ it.timings.image_gen_text }} •{% endif %}
+            подготовка {{ it.timings.prep_text }} (из них фон {{ it.timings.bg_remove_text }}) •
+            3D {{ it.timings.mesh_text }} •
+            <b>итого {{ it.timings.total_text }}</b>
+          </div>
+        {% endif %}
 
         <div style="display:flex; gap:10px; align-items:center; justify-content:space-between;">
           <div class="{% if it.ok %}ok{% else %}fail{% endif %}">

@@ -50,7 +50,12 @@
             {% else %}<span class="muted">Нет превью</span>{% endif %}
           </div>
           <div class="title2">{{ b.batch_id }}</div>
-          <div class="muted">{{ b.created_at }} • {{ 'текст' if b.input_type=='text' else 'картинка' }} • {{ b.items_count }} моделей</div>
+          <div class="muted">
+            {{ b.created_at }} • {{ 'текст' if b.input_type=='text' else 'картинка' }} • {{ b.items_count }} моделей
+          </div>
+          {% if b.total_text %}
+            <div class="muted">⏱ итого: {{ b.total_text }}</div>
+          {% endif %}
           {% if b.prompt %}
             <div class="muted">«{{ b.prompt[:80] }}{% if b.prompt|length > 80 %}…{% endif %}»</div>
           {% endif %}
