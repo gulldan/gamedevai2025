@@ -86,18 +86,13 @@ docker run --gpus all -p 8880:8000 lowpoly-generator \
 
 ### Текстовый запрос
 
-<video width="640" controls>
-  <source src="https://github.com/user-attachments/assets/f7e43b4e-48c2-4a96-a300-aa7e5593470e" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
+https://github.com/user-attachments/assets/f7e43b4e-48c2-4a96-a300-aa7e5593470e
 
 
 ### Генерация из изображения
 
-<video width="640" controls>
-  <source src="https://github.com/user-attachments/assets/74f5cb44-2fab-447a-ad33-ba22a0de1eb9" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
+https://github.com/user-attachments/assets/74f5cb44-2fab-447a-ad33-ba22a0de1eb9
+
 
 
 > **Важно**: для GitHub используйте `.mp4`, загружая через интерфейс issues/PR или dragging в редакторе. `.webm` не поддерживается как встраиваемое видео.
