@@ -5,120 +5,193 @@
   <title>Результаты — {{ batch_id }}</title>
   <script type="module" src="https://cdn.jsdelivr.net/npm/@google/model-viewer/dist/model-viewer.min.js"></script>
   <style>
-    :root {
-      --bg: #f6f7f9; --card:#fff; --border:#e6e8ec; --text:#1f2328;
-      --muted:#6b7280; --primary:#1f6feb; --primary-600:#1a5fd3; --ring:#93c5fd;
+    :root{
+      --bg:#f6f7f9; --card:#fff; --border:#e6e8ec; --text:#1f2328; --muted:#6b7280;
+      --primary:#1f6feb; --primary-600:#1a5fd3;
+      --container-w: 1580px;
+      --grid-gap: 14px;
+      --thumb-size: 110px;
     }
-    body { font-family: Inter, system-ui, Arial, sans-serif; background:var(--bg); margin:0; color:var(--text); }
-    .container { max-width: 1200px; margin: 24px auto; background:var(--card); border-radius:16px; padding:20px; box-shadow:0 10px 30px rgba(0,0,0,.06) }
-    header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
-    .title { margin:0; font-size:20px; font-weight:700; }
-    .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-    .btn { display:inline-flex; align-items:center; gap:8px; padding:10px 14px; border-radius:10px; font-weight:600; text-decoration:none; cursor:pointer; line-height:1; border:1px solid transparent; }
-    .btn:focus-visible { outline:3px solid var(--ring); outline-offset:2px; }
-    .btn-primary { background:var(--primary); color:#fff; }
-    .btn-primary:hover { background:var(--primary-600); }
-    .btn-ghost { background:#f8fafc; color:var(--text); border-color:var(--border); }
-    .btn-ghost:hover { filter:brightness(.98); }
-    .btn-outline { background:#fff; color:var(--text); border-color:var(--border); }
-    .btn-outline:hover { background:#fafafa; }
-    .icon { font-size:16px; }
+    *{box-sizing:border-box}
+    body{font-family:Inter, system-ui, Arial, sans-serif; background:var(--bg); margin:0; color:var(--text)}
+    .container{max-width:var(--container-w); margin:24px auto; background:var(--card); border-radius:16px; padding:18px; box-shadow:0 10px 30px rgba(0,0,0,.06)}
+    header{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px}
+    .title{margin:0; font-size:20px; font-weight:800}
+    .toolbar{display:flex; gap:8px; flex-wrap:wrap}
+    .btn{display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:10px; font-weight:600; text-decoration:none; border:1px solid var(--border); background:#fff; cursor:pointer}
+    .btn:hover{background:#fafafa}
+    .icon{font-size:16px}
 
-    .grid { display:grid; grid-template-columns: repeat(3, 1fr); gap:16px; }
-    .card { border:1px solid var(--border); border-radius:12px; padding:12px; background:#fcfdff; display:flex; flex-direction:column; gap:10px }
-    .row { display:flex; gap:10px; align-items:stretch; }
-    .left, .right { flex:1; }
-    .refbox { border:1px dashed #d9dde5; border-radius:10px; padding:8px; background:#fff; height:360px; display:flex; align-items:center; justify-content:center; }
-    .refbox img { max-width:100%; max-height:100%; object-fit:contain; }
-    model-viewer { width:100%; height:360px; background:#f3f4f7; border-radius:10px; }
-    .ok { color:#1a7f37; font-weight:600 }
-    .fail { color:#c62828; font-weight:600 }
-    .log { font-size:12px; color:#555; white-space:pre-line; background:#fff; border:1px solid #eceff4; border-radius:8px; padding:8px}
-    .caption { font-size:13px; color:#333 }
-    .timing { font-size:12px; color:#111; background:#fff; border:1px dashed #e6e8ec; border-radius:8px; padding:6px 8px; }
-    .footer { margin-top:12px; font-size:12px }
-    @media (max-width: 1024px) { .grid { grid-template-columns: 1fr; } }
+    .grid{
+      display:grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--grid-gap);
+    }
+    @media (max-width: 1260px){ .grid{ grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 880px){  .grid{ grid-template-columns: 1fr; } }
+
+    .card{
+      border:1px solid var(--border);
+      border-radius:12px;
+      background:#fcfdff;
+      padding:10px;
+      display:flex; flex-direction:column; gap:8px;
+    }
+    .caption{display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:13px}
+    .muted{color:var(--muted)}
+    .ok{color:#1a7f37; font-weight:700}
+    .fail{color:#c62828; font-weight:700}
+
+    .viewerWrap{
+      position:relative;
+      width:100%;
+      aspect-ratio: 1 / 1;
+      background:#eef2f7;
+      border:1px solid #e6e8ec;
+      border-radius:10px;
+      overflow:hidden;
+    }
+    model-viewer{
+      width:100%; height:100%;
+      background:#eef2f7;
+    }
+
+    .refOverlay{
+      position:absolute; left:8px; bottom:8px;
+      width:var(--thumb-size); height:var(--thumb-size);
+      background:#fff; border:1px solid #dfe3ea; border-radius:8px;
+      display:flex; align-items:center; justify-content:center;
+      box-shadow:0 8px 20px rgba(0,0,0,.12);
+      overflow:hidden;
+    }
+    .refOverlay img{ max-width:100%; max-height:100%; object-fit:contain; }
+
+    .maximize{
+      position:absolute; right:8px; top:8px;
+      background:#fff; border:1px solid #dfe3ea; border-radius:10px; padding:6px 8px;
+      font-size:12px; cursor:pointer; box-shadow:0 6px 16px rgba(0,0,0,.08);
+    }
+    .maximize:hover{ background:#fafafa; }
+
+    .meta{display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap}
+    .timing{font-size:12px; color:#111; background:#fff; border:1px dashed #e6e8ec; border-radius:8px; padding:6px 8px}
+    .log{font-size:12px; color:#555; white-space:pre-line; background:#fff; border:1px solid #eceff4; border-radius:8px; padding:8px}
+
+    dialog#mvModal{
+      width:96vw; height:92vh; border:none; border-radius:16px; padding:0; overflow:hidden;
+      box-shadow:0 20px 60px rgba(0,0,0,.25);
+    }
+    dialog::backdrop{ background:rgba(0,0,0,.45); }
+    .modalHead{display:flex; justify-content:space-between; align-items:center; padding:10px 12px; background:#fff; border-bottom:1px solid #e6e8ec}
+    .modalTitle{font-weight:800}
+    .modalBody{width:100%; height:calc(100% - 52px); background:#eef2f7}
+    .modalBody model-viewer{width:100%; height:100%; border:none; background:#eef2f7}
+
+    .promptbar{
+      margin: -6px 0 12px 0;
+      padding:10px 12px;
+      border:1px dashed #e6e8ec;
+      border-radius:10px;
+      background:#fff;
+      color:#374151;
+      font-size:13px;
+    }
   </style>
+  <script>
+    function openFullscreen(src, title){
+      const dlg = document.getElementById('mvModal');
+      const mv  = document.getElementById('mvModalViewer');
+      const tt  = document.getElementById('mvModalTitle');
+      if (mv && src) mv.src = src;
+      if (tt) tt.textContent = title || '3D Viewer';
+      try { dlg.showModal(); } catch(e){ dlg.setAttribute('open','open'); }
+    }
+    function closeFullscreen(){
+      const dlg = document.getElementById('mvModal');
+      const mv  = document.getElementById('mvModalViewer');
+      if (mv) mv.src = '';
+      try { dlg.close(); } catch(e){ dlg.removeAttribute('open'); }
+    }
+  </script>
 </head>
 <body>
   <div class="container">
     <header>
       <h1 class="title">Результаты — {{ batch_id }}</h1>
-      <nav class="toolbar" aria-label="Действия">
-        <a class="btn btn-ghost" href="{{ url_for('history') }}" title="Открыть историю">
-          <span class="icon">📜</span><span>История</span>
-        </a>
-        <a class="btn btn-outline" href="{{ url_for('download_batch', batch_id=batch_id) }}" title="Скачать весь батч ZIP">
-          <span class="icon">🗂️</span><span>Скачать все (ZIP)</span>
-        </a>
-        <a class="btn btn-primary" href="{{ url_for('index') }}" title="Новая генерация">
-          <span class="icon">➕</span><span>Новая генерация</span>
-        </a>
+      <nav class="toolbar">
+        <a class="btn" href="{{ url_for('history') }}"><span class="icon">📜</span>История</a>
+        <a class="btn" href="{{ url_for('download_batch', batch_id=batch_id) }}"><span class="icon">🗂️</span>Скачать все (ZIP)</a>
+        <a class="btn" href="{{ url_for('index') }}"><span class="icon">➕</span>Новая генерация</a>
       </nav>
     </header>
+
+    {% if prompt_display %}
+      <div class="promptbar"><b>Входные данные:</b> {{ prompt_display }}</div>
+    {% endif %}
 
     <div class="grid">
       {% for it in items %}
       <div class="card">
         <div class="caption">
-          <b>{{ it.title }}</b>
-          {% if it.prompt %} — «{{ it.prompt }}»{% endif %}
-          {% if it.seed is not none %} <span style="color:#777;">(seed={{ it.seed }})</span>{% endif %}
+          <div>
+            <b>{{ it.title }}</b>
+            {% if it.seed is not none %}<span class="muted"> (seed={{ it.seed }})</span>{% endif %}
+          </div>
+          <div class="{% if it.ok %}ok{% else %}fail{% endif %}">{% if it.ok %}Готово{% else %}Ошибка{% endif %}</div>
         </div>
 
-        <div class="row">
-          <div class="left">
-            <div class="refbox">
-              {% if it.ref_img_rel %}
+        <div class="viewerWrap">
+          {% if it.model_rel and it.model_rel.endswith('.glb') %}
+            <model-viewer
+              src="{{ url_for('static', filename=it.model_rel) }}"
+              camera-controls auto-rotate autoplay
+              exposure="1.0" shadow-intensity="0.2"
+              environment-image="neutral"
+              interaction-prompt-threshold="1200"
+              ar-modes="webxr scene-viewer quick-look">
+            </model-viewer>
+            <button class="maximize" onclick="openFullscreen('{{ url_for('static', filename=it.model_rel) }}', '{{ it.title|e }}')">⤢</button>
+
+            {% if it.ref_img_rel %}
+              <div class="refOverlay" title="Исходный референс">
                 <img src="{{ url_for('static', filename=it.ref_img_rel) }}" alt="ref">
-              {% else %}
-                <span>Нет превью</span>
-              {% endif %}
-            </div>
-          </div>
-          <div class="right">
-            {% if it.model_rel and it.model_rel.endswith('.glb') %}
-              <model-viewer src="{{ url_for('static', filename=it.model_rel) }}"
-                            camera-controls auto-rotate
-                            exposure="1.0" shadow-intensity="0.2"
-                            environment-image="neutral">
-              </model-viewer>
-            {% elif it.model_rel %}
-              <div class="refbox">
-                <div>
-                  <div>Формат: {{ it.model_rel.split('.')[-1] }} (просмотр здесь недоступен)</div>
-                  <div style="margin-top:6px;">
-                    <a class="btn btn-outline" href="{{ url_for('static', filename=it.model_rel) }}" download title="Скачать модель">
-                      <span class="icon">⬇️</span><span>Скачать</span>
-                    </a>
-                  </div>
+              </div>
+            {% endif %}
+
+          {% elif it.model_rel %}
+            <div class="viewerWrap" style="display:flex;align-items:center;justify-content:center;background:#fff;">
+              <div>
+                <div>Формат: {{ it.model_rel.split('.')[-1] }} (просмотр здесь недоступен)</div>
+                <div style="margin-top:6px;">
+                  <a class="btn" href="{{ url_for('static', filename=it.model_rel) }}" download><span class="icon">⬇️</span>Скачать</a>
                 </div>
               </div>
-            {% else %}
-              <div class="refbox"><span>Нет модели</span></div>
+            </div>
+            {% if it.ref_img_rel %}
+              <div class="refOverlay" title="Исходный референс">
+                <img src="{{ url_for('static', filename=it.ref_img_rel) }}" alt="ref">
+              </div>
             {% endif %}
-          </div>
+          {% else %}
+            <div class="viewerWrap" style="display:flex;align-items:center;justify-content:center;">
+              <span class="muted">Нет модели</span>
+            </div>
+          {% endif %}
         </div>
 
         {% if it.timings %}
           <div class="timing">
             ⏱️ <b>Время:</b>
-            {% if it.timings.image_gen_text %} изображение {{ it.timings.image_gen_text }} •{% endif %}
-            подготовка {{ it.timings.prep_text }} (из них фон {{ it.timings.bg_remove_text }}) •
+            {% if it.timings.image_gen_text %}изображение {{ it.timings.image_gen_text }} • {% endif %}
+            подготовка {{ it.timings.prep_text }} (фон {{ it.timings.bg_remove_text }}) •
             3D {{ it.timings.mesh_text }} •
             <b>итого {{ it.timings.total_text }}</b>
           </div>
         {% endif %}
 
-        <div style="display:flex; gap:10px; align-items:center; justify-content:space-between;">
-          <div class="{% if it.ok %}ok{% else %}fail{% endif %}">
-            {% if it.ok %}Готово{% else %}Ошибка{% endif %}
-          </div>
-          <div>
-            <a class="btn btn-outline" href="{{ url_for('download_item', batch_id=batch_id, idx=loop.index0) }}" title="Скачать вариант ZIP">
-              <span class="icon">⬇️</span><span>ZIP варианта</span>
-            </a>
-          </div>
+        <div class="meta">
+          <a class="btn" href="{{ url_for('download_item', batch_id=batch_id, idx=loop.index0) }}"><span class="icon">⬇️</span>ZIP варианта</a>
+          {% if it.log %}<span class="muted">лог см. ниже</span>{% endif %}
         </div>
 
         {% if it.log %}
@@ -127,10 +200,20 @@
       </div>
       {% endfor %}
     </div>
-
-    <div class="footer" style="display:flex; gap:10px; margin-top:16px;">
-      <a class="btn btn-ghost" href="{{ url_for('index') }}">⟵ Назад</a>
-    </div>
   </div>
+
+  <dialog id="mvModal">
+    <div class="modalHead">
+      <div class="modalTitle" id="mvModalTitle">3D Viewer</div>
+      <button class="btn" onclick="closeFullscreen()">✕ Закрыть</button>
+    </div>
+    <div class="modalBody">
+      <model-viewer id="mvModalViewer"
+                    camera-controls auto-rotate autoplay
+                    exposure="1.0" shadow-intensity="0.2"
+                    environment-image="neutral">
+      </model-viewer>
+    </div>
+  </dialog>
 </body>
 </html>
