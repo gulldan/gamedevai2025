@@ -1,2 +1,2 @@
 docker build -t kvadricepts-gamedevai2025 .
-docker run -it --gpus all -p 8880:8000 kvadricepts-gamedevai2025 python -m granian --interface wsgi --workers 1 --host 0.0.0.0 --port 8000 app:app
+docker run -d --rm --gpus all -v "$(pwd)/models:/root/.cache" -v "$(pwd)/results:/workspace/frontend/static/results" -p 8880:8000 kvadricepts-gamedevai2025:latest python -m granian --interface wsgi --workers 1 --host 0.0.0.0 --port 8000 app:app
