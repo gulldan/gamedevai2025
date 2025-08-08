@@ -204,7 +204,9 @@ def _try_import_rembg_session() -> Any | None:
         Any | None: Объект сессии rembg или None при недоступности.
     """
     try:
-        from rembg import new_session  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
+        from rembg import (
+            new_session,  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
+        )
 
         return new_session("u2net")
     except Exception:
@@ -225,7 +227,9 @@ def _remove_bg_bytes(data: bytes, session: Any, erode_px: int) -> bytes:
         bytes: Результат обработки с альфа-каналом.
     """
     try:
-        from rembg import remove  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
+        from rembg import (
+            remove,  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
+        )
 
         cut = remove(
             data,
@@ -238,7 +242,9 @@ def _remove_bg_bytes(data: bytes, session: Any, erode_px: int) -> bytes:
         return cut
     except Exception:
         try:
-            from rembg import remove  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
+            from rembg import (
+                remove,  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
+            )
 
             return remove(data)
         except Exception:

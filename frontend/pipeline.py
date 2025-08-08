@@ -1,112 +1,62 @@
 #!/usr/bin/env python3
 
-from __future__ import annotations
-
 import gc
 import logging
 import os
-import platform
 import sys
 import warnings
-from collections.abc import Callable
-from pathlib import Path
-from typing import Any
+
+# Устанавливаем путь к библиотекам PyTorch для custom_rasterizer
+torch_lib_path = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    ".venv/lib/python3.10/site-packages/torch/lib",
+)
+if os.path.exists(torch_lib_path):
+    current_ld_path = os.environ.get("LD_LIBRARY_PATH", "")
+    if torch_lib_path not in current_ld_path:
+        os.environ["LD_LIBRARY_PATH"] = (
+            f"{current_ld_path}:{torch_lib_path}" if current_ld_path else torch_lib_path
+        )
+
+# Добавляем пути к модулям Hunyuan3D согласно официальной документации
+sys.path.insert(0, "./Hunyuan3D-2.1/hy3dshape")
+sys.path.insert(0, "./Hunyuan3D-2.1/hy3dpaint")
 
 import torch
+from diffusers import DiffusionPipeline
+from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
 from PIL import Image
+from textureGenPipeline import Hunyuan3DPaintConfig, Hunyuan3DPaintPipeline
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("pipeline")
 
-# ---------------------------------------------------------------------------------
-# Пути и окружение: используем абсолютные пути относительно корня репозитория
-# ---------------------------------------------------------------------------------
-THIS_DIR = Path(__file__).resolve().parent
-ROOT_DIR = THIS_DIR.parents[1]
-HY3D_ROOT = ROOT_DIR / "Hunyuan3D-2.1"
+# Применяем torchvision fix как в официальном примере
+try:
+    sys.path.insert(0, "./Hunyuan3D-2.1")
+    from torchvision_fix import apply_fix
 
-# Делаем доступными модули из Hunyuan3D-2.1 (hy3dshape, hy3dpaint, torchvision_fix)
-sys.path.insert(0, str(HY3D_ROOT))
-# Для надёжности добавляем вложенные корни пакетов
-sys.path.insert(0, str(HY3D_ROOT / "hy3dshape"))
-sys.path.insert(0, str(HY3D_ROOT / "hy3dpaint"))
+    apply_fix()
+except ImportError:
+    logger.warning(
+        "torchvision_fix module not found, proceeding without compatibility fix"
+    )
+except Exception as e:
+    logger.warning("Failed to apply torchvision fix: %s", e)
 
-
-def _ensure_torch_lib_on_path() -> None:
-    """Добавляет путь к бинарникам PyTorch в переменную окружения.
-
-    Добавляет директорию `torch/lib` в `LD_LIBRARY_PATH` (Linux) или
-    `DYLD_LIBRARY_PATH` (macOS), чтобы нативные расширения могли
-    корректно подгружать зависимости.
-
-    Returns:
-        None
-    """
-    try:
-        torch_lib_dir = Path(torch.__file__).parent / "lib"
-        if not torch_lib_dir.exists():
-            return
-        if platform.system() == "Darwin":
-            key = "DYLD_LIBRARY_PATH"
-        elif os.name == "posix":
-            key = "LD_LIBRARY_PATH"
-        else:
-            key = None
-        if key:
-            current = os.environ.get(key, "")
-            paths = [p for p in current.split(":") if p]
-            if str(torch_lib_dir) not in paths:
-                os.environ[key] = f"{current}:{torch_lib_dir}" if current else str(torch_lib_dir)
-    except Exception:
-        pass
-
-
-def _try_import_mesh_uv_wrap() -> Callable[[Any], Any] | None:
-    """Импортирует функцию `mesh_uv_wrap`, если модуль доступен.
-
-    Returns:
-        Callable[[Any], Any] | None
-    """
-    try:
-        from importlib import import_module
-
-        module = import_module("hy3dpaint.utils.uvwrap_utils")
-        return getattr(module, "mesh_uv_wrap", None)
-    except Exception:
-        return None
-
-
-def _apply_torchvision_fix_if_available() -> None:
-    """Применяет фиксы совместимости из `torchvision_fix`, если доступно.
-
-    Файл ожидается в корне `Hunyuan3D-2.1`.
-    """
-    try:
-        from torchvision_fix import apply_fix  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
-
-        apply_fix()
-    except Exception:
-        # Не превращаем это в фатальную ошибку
-        logger.exception("torchvision_fix not applied")
-
-
-_ensure_torch_lib_on_path()
-
-# Настройка устройства
+# Настройка управления памятью CUDA
+torch.cuda.empty_cache()
 if torch.cuda.is_available():
-    device = torch.device("cuda")
-    # Лучшее управление памятью на CUDA
+    # Устанавливаем переменную окружения для лучшего управления памятью
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    try:
-        logger.info(f"🎮 GPU: {torch.cuda.get_device_name(0)}")
-        logger.info(f"💾 VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-    except Exception:
-        logger.debug("Failed to extend torch lib path", exc_info=True)
-elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-    device = torch.device("mps")
-else:
-    device = torch.device("cpu")
+    logger.info("🎮 GPU: %s", torch.cuda.get_device_name(0))
+    logger.info(
+        "💾 VRAM: %.1f GB",
+        torch.cuda.get_device_properties(0).total_memory / 1024**3,
+    )
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Глобальные переменные для pipeline
 shape_pipeline = None
@@ -135,25 +85,23 @@ def clear_memory() -> None:
 def simplify_mesh_and_rewrap(input_glb: str, output_glb: str, target_count: int) -> str:
     """Упрощает меш до заданного числа треугольников и заново разворачивает UV.
 
-    Внутри используется `trimesh` для упрощения и `mesh_uv_wrap` из
-    `hy3dpaint.utils.uvwrap_utils` для повторной развёртки.  Если число граней
-    исходного меша уже меньше `target_count`, функция просто копирует файл.
-
     Args:
-        input_glb: путь к исходному GLB (или OBJ) файлу.
-        output_glb: путь, по которому будет сохранён упрощённый GLB.
-        target_count: желаемое количество треугольников.
+        input_glb (str): Путь к исходному GLB/OBJ файлу.
+        output_glb (str): Путь для сохранения упрощённого GLB.
+        target_count (int): Желаемое количество треугольников.
 
     Returns:
-        Путь к упрощённому GLB.
-    """
-    import trimesh  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
+        str: Путь к упрощённому GLB.
 
-    # Пытаемся динамически импортировать функцию развёртки UV
-    mesh_uv_wrap = _try_import_mesh_uv_wrap()
+    Notes:
+        Использует `trimesh` для упрощения и `hy3dpaint.utils.uvwrap_utils.mesh_uv_wrap`
+        для повторной UV-развёртки при наличии.
+    """
+    import trimesh
+    from hy3dpaint.utils.uvwrap_utils import mesh_uv_wrap
 
     # Загружаем меш (поддерживаются как GLB, так и OBJ)
-    mesh: Any = trimesh.load(input_glb)
+    mesh = trimesh.load(input_glb)
 
     # Если файл содержит несколько частей и загружен как сцена,
     # преобразуем его в единый Trimesh.  Иначе у сцены отсутствует
@@ -167,91 +115,67 @@ def simplify_mesh_and_rewrap(input_glb: str, output_glb: str, target_count: int)
         mesh = mesh.simplify_quadratic_decimation(target_count)
 
     # Повторно разворачиваем UV, чтобы текстуры корректно легли на изменённую топологию
-    if callable(mesh_uv_wrap):
-        try:
-            mesh = mesh_uv_wrap(mesh)  # type: ignore[misc]
-        except Exception:
-            logger.exception("⚠️ Ошибка при развёртке UV. Меш сохранён без обновления UV.")
+    try:
+        mesh = mesh_uv_wrap(mesh)
+    except Exception as e:
+        logger.warning("⚠️ Ошибка при развёртке UV: %s. Меш сохранён без обновления UV.", e)
 
     # Сохраняем упрощённый меш
     mesh.export(output_glb)
     return output_glb
 
 
-def load_shape_pipeline() -> Any | None:
-    """Загружает пайплайн генерации формы.
+def load_shape_pipeline() -> object:
+    """Загружает shape pipeline с очисткой памяти.
 
     Returns:
-        Any | None
+        object: Экземпляр пайплайна генерации формы.
     """
     global shape_pipeline
     if shape_pipeline is None:
         logger.info("📦 Загружаем shape pipeline...")
         clear_memory()
-        _apply_torchvision_fix_if_available()
-        try:
-            # Импорт выполняем лениво, чтобы избежать ошибок импортера у линтера
-            from hy3dshape.pipelines import (  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
-                Hunyuan3DDiTFlowMatchingPipeline,
-            )
-
-            shape_pipe = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained("tencent/Hunyuan3D-2.1")
-            # Переносим на целевое устройство, если поддерживается
-            try:
-                shape_pipe = shape_pipe.to(device)
-            except Exception:
-                pass
-            shape_pipeline = shape_pipe
-        except Exception:
-            logger.exception("❌ Ошибка загрузки shape pipeline")
-            return None
+        shape_pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+            "tencent/Hunyuan3D-2.1"
+        )
         logger.info("✅ Shape pipeline загружен")
     return shape_pipeline
 
 
-def load_paint_pipeline() -> Any | None:
-    """Загружает пайплайн текстурирования.
+def load_paint_pipeline() -> object:
+    """Загружает paint pipeline с очисткой памяти.
 
     Returns:
-        Any | None
+        object: Экземпляр пайплайна текстурирования.
     """
     global paint_pipeline
     if paint_pipeline is None:
         logger.info("📦 Загружаем paint pipeline...")
         clear_memory()
         try:
-            _apply_torchvision_fix_if_available()
-            # Импорты выполняем лениво
-            from hy3dpaint.textureGenPipeline import (  # type: ignore[import-not-found]  # pyright: ignore[reportMissingImports]
-                Hunyuan3DPaintConfig,
-                Hunyuan3DPaintPipeline,
-            )
-
             max_num_view = 6
             resolution = 512
             conf = Hunyuan3DPaintConfig(max_num_view, resolution)
-
-            # Настраиваем пути конфигураций/чекпоинтов, если они существуют
-            realesrgan_ckpt = HY3D_ROOT / "hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
-            if realesrgan_ckpt.exists():
-                conf.realesrgan_ckpt_path = str(realesrgan_ckpt)
-            conf.multiview_cfg_path = str(HY3D_ROOT / "hy3dpaint/cfgs/hunyuan-paint-pbr.yaml")
-            conf.custom_pipeline = str(HY3D_ROOT / "hy3dpaint/hunyuanpaintpbr")
-
-            paint_pipeline_obj = Hunyuan3DPaintPipeline(conf)
-            paint_pipeline = paint_pipeline_obj
+            conf.realesrgan_ckpt_path = (
+                "Hunyuan3D-2.1/hy3dpaint/ckpt/RealESRGAN_x4plus.pth"
+            )
+            conf.multiview_cfg_path = (
+                "Hunyuan3D-2.1/hy3dpaint/cfgs/hunyuan-paint-pbr.yaml"
+            )
+            conf.custom_pipeline = "Hunyuan3D-2.1/hy3dpaint/hunyuanpaintpbr"
+            paint_pipeline = Hunyuan3DPaintPipeline(conf)
             logger.info("✅ Paint pipeline загружен")
-        except Exception:
-            logger.exception("❌ Ошибка загрузки paint pipeline")
+        except Exception as e:
+            logger.exception("❌ Ошибка загрузки paint pipeline: %s", e)
             return None
     return paint_pipeline
 
 
-def load_image_gen_pipeline() -> Any | None:
-    """Загружает пайплайн генерации изображений.
+def load_image_gen_pipeline() -> object:
+    """Загружает image generation pipeline с очисткой памяти.
 
     Returns:
-        Any | None
+        object: Экземпляр пайплайна генерации изображений.
     """
     global image_gen_pipeline
     if image_gen_pipeline is None:
@@ -259,63 +183,56 @@ def load_image_gen_pipeline() -> Any | None:
         clear_memory()
         try:
             # Позволяем указать альтернативную модель для генерации изображений
-            model_id = os.environ.get("IMAGE_GEN_MODEL_ID", "playgroundai/playground-v2.5-1024px-aesthetic")
-            # Импортируем внутри функции, чтобы избежать ошибок линтера
-            from diffusers import DiffusionPipeline  # type: ignore[import-not-found]
-
-            # Подбираем dtype и variant в зависимости от устройства
-            if device.type == "cuda":
-                dtype = torch.float16
-                variant = "fp16"
-            elif device.type == "mps":
-                # На MPS обычно работает float16/bfloat16. Выберем bfloat16 при наличии
-                dtype = torch.bfloat16 if hasattr(torch, "bfloat16") else torch.float16
-                variant = None
-            else:
-                dtype = torch.float32
-                variant = None
-
+            model_id = os.environ.get(
+                "IMAGE_GEN_MODEL_ID", "playgroundai/playground-v2.5-1024px-aesthetic"
+            )
             try:
-                if variant is not None:
-                    pipe = DiffusionPipeline.from_pretrained(model_id, torch_dtype=dtype, variant=variant)
-                else:
-                    pipe = DiffusionPipeline.from_pretrained(model_id, torch_dtype=dtype)
+                # Попробуем загрузить стандартный диффузионный пайплайн
+                image_gen_pipeline = DiffusionPipeline.from_pretrained(
+                    model_id,
+                    torch_dtype=torch.float16,
+                    variant="fp16",
+                ).to(device)
             except Exception as diff_err:
+                # Если загрузить DiffusionPipeline не удалось и имя модели содержит
+                # "flux", попробуем использовать FluxPipeline (модели FLUX
+                # используют собственный класс пайплайна в diffusers).
                 if "flux" in model_id.lower():
-                    from diffusers import FluxPipeline  # type: ignore[import-not-found]
+                    from diffusers import FluxPipeline  # type: ignore
 
-                    pipe = FluxPipeline.from_pretrained(model_id, torch_dtype=dtype)
+                    image_gen_pipeline = FluxPipeline.from_pretrained(
+                        model_id,
+                        torch_dtype=torch.bfloat16,
+                    ).to(device)
                 else:
                     raise diff_err
 
-            try:
-                pipe = pipe.to(device)
-            except Exception:
-                pass
-
-            # Снижаем потребление VRAM, если поддерживается
-            for method_name in (
+            # Снижаем потребление VRAM: переносим части модели на CPU и
+            # включаем slicing внимания, если эти методы доступны
+            for method_name in [
                 "enable_model_cpu_offload",
                 "enable_attention_slicing",
                 "enable_xformers_memory_efficient_attention",
-            ):
-                method = getattr(pipe, method_name, None)
+            ]:
+                method = getattr(image_gen_pipeline, method_name, None)
                 if callable(method):
                     try:
                         method()
                     except Exception:
                         pass
-
-            image_gen_pipeline = pipe
-            logger.info(f"✅ Image generation pipeline загружен: {model_id}")
-        except Exception:
-            logger.exception("❌ Ошибка загрузки image generation pipeline")
+            logger.info("✅ Image generation pipeline загружен: %s", model_id)
+        except Exception as e:
+            logger.exception("❌ Ошибка загрузки image generation pipeline: %s", e)
             return None
     return image_gen_pipeline
 
 
 def unload_pipelines() -> None:
-    """Выгружает все пайплайны и очищает память."""
+    """Выгружает все pipeline для освобождения памяти.
+
+    Returns:
+        None
+    """
     global shape_pipeline, paint_pipeline, image_gen_pipeline
 
     if shape_pipeline is not None:
@@ -352,9 +269,17 @@ def resize_and_pad(
 
 
 def generate_mesh_from_image(image_path: str, output_path: str) -> bool:
-    """Генерирует меш из изображения."""
+    """Генерирует меш из изображения с оптимизацией памяти.
+
+    Args:
+        image_path (str): Путь к исходному изображению.
+        output_path (str): Путь для сохранения GLB/OBJ.
+
+    Returns:
+        bool: Успех операции.
+    """
     if not os.path.exists(image_path):
-        logger.error(f"❌ Файл изображения не найден: {image_path}")
+        logger.error("❌ Файл изображения не найден: %s", image_path)
         return False
 
     logger.info("🔄 Начинаем генерацию меша из изображения...")
@@ -373,13 +298,13 @@ def generate_mesh_from_image(image_path: str, output_path: str) -> bool:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         ref_image_path = os.path.splitext(output_path)[0] + ".png"
         processed_image.save(ref_image_path)
-        logger.info(f"📸 Референсное изображение сохранено: {ref_image_path}")
+        logger.info("📸 Референсное изображение сохранено: %s", ref_image_path)
 
         # Генерируем меш
         logger.info("🎯 Генерируем меш...")
-        mesh_untextured: Any = pipeline(image=processed_image, show_progress_bar=False)[0]
+        mesh_untextured = pipeline(image=processed_image, show_progress_bar=False)[0]
         mesh_untextured.export(output_path)
-        logger.info(f"✅ Меш сохранен: {output_path}")
+        logger.info("✅ Меш сохранен: %s", output_path)
 
         return True
 
@@ -387,8 +312,8 @@ def generate_mesh_from_image(image_path: str, output_path: str) -> bool:
         logger.exception("❌ Недостаточно VRAM для генерации меша")
         logger.info("💡 Попробуйте освободить память или уменьшить размер изображения")
         return False
-    except Exception:
-        logger.exception("❌ Ошибка генерации меша")
+    except Exception as e:
+        logger.exception("❌ Ошибка генерации меша: %s", e)
         return False
     finally:
         clear_memory()
@@ -415,10 +340,10 @@ def generate_textured_mesh_from_image(
             встроенный ремеш пайплайна (если `use_remesh=True`).
 
     Returns:
-        True при успешной генерации, иначе False.
+        bool: Успех операции.
     """
     if not os.path.exists(image_path):
-        logger.error(f"❌ Файл изображения не найден: {image_path}")
+        logger.error("❌ Файл изображения не найден: %s", image_path)
         return False
 
     logger.info("🔄 Начинаем генерацию текстурированного меша из изображения...")
@@ -438,12 +363,12 @@ def generate_textured_mesh_from_image(
         base_path, ext = os.path.splitext(output_path)
         ref_image_path = base_path + ".png"
         processed_image.save(ref_image_path)
-        logger.info(f"📸 Референсное изображение сохранено: {ref_image_path}")
+        logger.info("📸 Референсное изображение сохранено: %s", ref_image_path)
 
-        mesh_untextured: Any = shape_pipe(image=processed_image, show_progress_bar=False)[0]
+        mesh_untextured = shape_pipe(image=processed_image, show_progress_bar=False)[0]
         untextured_path = base_path + "_untextured.glb"
         mesh_untextured.export(untextured_path)
-        logger.info(f"✅ Меш без текстуры сохранен: {untextured_path}")
+        logger.info("✅ Меш без текстуры сохранен: %s", untextured_path)
 
         # Очищаем память после генерации меша
         clear_memory()
@@ -460,28 +385,29 @@ def generate_textured_mesh_from_image(
         if target_face_count is not None:
             simplified_path = base_path + "_preprocessed.glb"
             try:
-                simplified_path = simplify_mesh_and_rewrap(untextured_path, simplified_path, target_face_count)
+                simplified_path = simplify_mesh_and_rewrap(
+                    untextured_path, simplified_path, target_face_count
+                )
                 mesh_for_paint = simplified_path
                 # при пользовательском упрощении не нужен ремешинг внутри пайплайна
                 use_remesh = False
             except Exception as e:
-                logger.warning(f"⚠️ Не удалось упростить и переобернуть меш: {e}. Продолжаем с исходным.")
-        # Если пользователь отключил ремешинг, но не указал упрощение,
-        # делаем повторную UV-развёртку исходного меша.  Это полезно, если
-        # оригинальная UV-карта не совпадает с текстурой.
-        elif not use_remesh:
-            try:
-                import trimesh  # type: ignore[import-not-found]
+                logger.warning("⚠️ Не удалось упростить и переобернуть меш: %s. Продолжаем с исходным.", e)
+        else:
+            # Если пользователь отключил ремешинг, но не указал упрощение,
+            # делаем повторную UV-развёртку исходного меша.  Это полезно, если
+            # оригинальная UV-карта не совпадает с текстурой.
+            if not use_remesh:
+                try:
+                    import trimesh  # type: ignore
+                    from hy3dpaint.utils.uvwrap_utils import mesh_uv_wrap
 
-                mesh_uv_wrap = _try_import_mesh_uv_wrap()
-
-                mesh_tmp: Any = trimesh.load(untextured_path)
-                if callable(mesh_uv_wrap):
-                    mesh_tmp = mesh_uv_wrap(mesh_tmp)  # type: ignore[misc]
-                mesh_tmp.export(untextured_path)
-                logger.info("🔁 Выполнена повторная UV-развёртка исходного меша")
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при повторной UV-развёртке: {e}")
+                    mesh_tmp = trimesh.load(untextured_path)
+                    mesh_tmp = mesh_uv_wrap(mesh_tmp)
+                    mesh_tmp.export(untextured_path)
+                    logger.info("🔁 Выполнена повторная UV-развёртка исходного меша")
+                except Exception as e:
+                    logger.warning("⚠️ Ошибка при повторной UV-развёртке: %s", e)
 
         # Если пользователь указал .glb как выход, используем временный .obj для рисования
         desired_ext = ext.lower()
@@ -494,14 +420,6 @@ def generate_textured_mesh_from_image(
             output_mesh_path=obj_output_path,
             use_remesh=use_remesh,
         )
-        # Проверяем, что OBJ действительно создан
-        if not os.path.exists(obj_output_path):
-            # Некоторые реализации могут возвращать путь к результату
-            if isinstance(output_mesh_path, str) and os.path.exists(output_mesh_path):
-                obj_output_path = output_mesh_path
-            else:
-                logger.error(f"❌ Paint pipeline не создал OBJ: {obj_output_path}. Возврат без результата.")
-                return False
 
         # Исправляем пути к текстурам в OBJ
         fix_texture_paths(obj_output_path)
@@ -518,7 +436,7 @@ def generate_textured_mesh_from_image(
             копируем OBJ, чтобы пользователь получил хотя бы OBJ.
             """
             try:
-                import bpy  # type: ignore[import-not-found]
+                import bpy  # type: ignore
 
                 # Очистить сцену
                 bpy.ops.object.select_all(action="SELECT")
@@ -534,43 +452,55 @@ def generate_textured_mesh_from_image(
 
                 # Экспортировать GLTF/GLB.  bpy.ops.export_scene.gltf
                 # автоматически определяет формат по расширению пути.
-                bpy.ops.export_scene.gltf(filepath=final_glb_path, use_active_scene=True)
-                logger.info(f"✅ OBJ конвертирован в GLB через Blender: {final_glb_path}")
+                bpy.ops.export_scene.gltf(
+                    filepath=final_glb_path, use_active_scene=True
+                )
+                print(f"✅ OBJ конвертирован в GLB через Blender: {final_glb_path}")
             except Exception:
                 # Если Blender недоступен или произошла любая ошибка, пытаемся
                 # конвертировать через trimesh
                 try:
-                    import trimesh  # type: ignore[import-not-found]
+                    import trimesh  # type: ignore
 
-                    mesh: Any = trimesh.load(obj_output_path)
+                    mesh = trimesh.load(obj_output_path)
                     mesh.export(final_glb_path)
-                    logger.info(f"✅ OBJ конвертирован в GLB через trimesh: {final_glb_path}")
+                    print(f"✅ OBJ конвертирован в GLB через trimesh: {final_glb_path}")
                 except Exception as e:
-                    logger.warning(f"⚠️ Не удалось конвертировать OBJ в GLB: {e}. Оставляем OBJ в качестве результата.")
+                    print(
+                        f"⚠️ Не удалось конвертировать OBJ в GLB: {e}. Оставляем OBJ в качестве результата."
+                    )
                     import shutil
 
                     shutil.copy(obj_output_path, final_glb_path)
 
         # Создаем OBJ версию с текстурами для пользователя
         obj_path = obj_output_path
-        logger.info(f"✅ Текстурированный OBJ сохранен: {obj_path}")
+        logger.info("✅ Текстурированный OBJ сохранен: %s", obj_path)
         if desired_ext == ".glb":
-            logger.info(f"✅ Текстурированный GLB сохранен: {final_glb_path}")
+            logger.info("✅ Текстурированный GLB сохранен: %s", final_glb_path)
         return True
 
     except torch.cuda.OutOfMemoryError:
-        logger.exception("❌ Недостаточно VRAM для генерации")
-        logger.info("💡 Попробуйте освободить память или уменьшить размер изображения")
+        print("❌ Недостаточно VRAM для генерации")
+        print("💡 Попробуйте освободить память или уменьшить размер изображения")
         return False
-    except Exception:
-        logger.exception("❌ Ошибка генерации")
+    except Exception as e:
+        print(f"❌ Ошибка генерации: {e}")
         return False
     finally:
         clear_memory()
 
 
 def generate_mesh_from_text(prompt: str, output_path: str) -> bool:
-    """Генерирует меш из текста."""
+    """Генерирует меш из текста с оптимизацией памяти.
+
+    Args:
+        prompt (str): Текстовый промпт.
+        output_path (str): Путь для сохранения GLB/OBJ.
+
+    Returns:
+        bool: Успех операции.
+    """
     logger.info("🔄 Начинаем генерацию меша из текста...")
     clear_memory()
 
@@ -584,12 +514,12 @@ def generate_mesh_from_text(prompt: str, output_path: str) -> bool:
         # Генерируем изображение
         logger.info("🎨 Генерируем изображение из текста...")
         image = img_pipe(prompt=prompt).images[0]
-        processed_image = resize_and_pad(image, (512, 512))
+        processed_image = resize_and_pad(image, (256, 512))
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         ref_image_path = os.path.splitext(output_path)[0] + ".png"
         processed_image.save(ref_image_path)
-        logger.info(f"📸 Сгенерированное изображение сохранено: {ref_image_path}")
+        logger.info("📸 Сгенерированное изображение сохранено: %s", ref_image_path)
 
         # Очищаем память после генерации изображения
         clear_memory()
@@ -600,17 +530,17 @@ def generate_mesh_from_text(prompt: str, output_path: str) -> bool:
         if shape_pipe is None:
             return False
 
-        mesh_untextured: Any = shape_pipe(image=processed_image, show_progress_bar=False)[0]
+        mesh_untextured = shape_pipe(image=processed_image, show_progress_bar=False)[0]
         mesh_untextured.export(output_path)
-        logger.info(f"✅ Меш из текста сохранен: {output_path}")
+        logger.info("✅ Меш из текста сохранен: %s", output_path)
 
         return True
 
     except torch.cuda.OutOfMemoryError:
         logger.exception("❌ Недостаточно VRAM для генерации")
         return False
-    except Exception:
-        logger.exception("❌ Ошибка генерации")
+    except Exception as e:
+        logger.exception("❌ Ошибка генерации: %s", e)
         return False
     finally:
         clear_memory()
@@ -638,18 +568,18 @@ def generate_textured_mesh_from_text(
     Returns:
         True при успешной генерации, иначе False.
     """
-    logger.info("🔄 Начинаем генерацию текстурированного меша из текста...")
+    print("🔄 Начинаем генерацию текстурированного меша из текста...")
     clear_memory()
 
     try:
         # Загружаем image generation pipeline
         img_pipe = load_image_gen_pipeline()
         if img_pipe is None:
-            logger.error("❌ Image generation pipeline недоступен")
+            print("❌ Image generation pipeline недоступен")
             return False
 
         # Генерируем изображение
-        logger.info("🎨 Генерируем изображение из текста...")
+        print("🎨 Генерируем изображение из текста...")
         image = img_pipe(prompt=prompt).images[0]
         processed_image = resize_and_pad(image, (512, 512))
 
@@ -657,7 +587,7 @@ def generate_textured_mesh_from_text(
         base_path, ext = os.path.splitext(output_path)
         ref_image_path = base_path + ".png"
         processed_image.save(ref_image_path)
-        logger.info(f"📸 Сгенерированное изображение сохранено: {ref_image_path}")
+        print(f"📸 Сгенерированное изображение сохранено: {ref_image_path}")
 
         # Очищаем память после генерации изображения
         # Выгружаем image_gen_pipeline, чтобы освободить VRAM перед загрузкой shape-пайплайна
@@ -668,24 +598,24 @@ def generate_textured_mesh_from_text(
         clear_memory()
 
         # Генерируем меш
-        logger.info("🎯 Генерируем меш из изображения...")
+        print("🎯 Генерируем меш из изображения...")
         shape_pipe = load_shape_pipeline()
         if shape_pipe is None:
             return False
 
-        mesh_untextured: Any = shape_pipe(image=processed_image, show_progress_bar=False)[0]
+        mesh_untextured = shape_pipe(image=processed_image, show_progress_bar=False)[0]
         untextured_path = base_path + "_untextured.glb"
         mesh_untextured.export(untextured_path)
-        logger.info(f"✅ Меш без текстуры сохранен: {untextured_path}")
+        print(f"✅ Меш без текстуры сохранен: {untextured_path}")
 
         # Очищаем память после генерации меша
         clear_memory()
 
         # Генерируем текстуру
-        logger.info("🎨 Генерируем текстуру...")
+        print("🎨 Генерируем текстуру...")
         paint_pipe = load_paint_pipeline()
         if paint_pipe is None:
-            logger.error("❌ Paint pipeline недоступен")
+            print("❌ Paint pipeline недоступен")
             return False
 
         # Если требуется предварительное упрощение и переобёртка, выполняем её здесь
@@ -693,26 +623,29 @@ def generate_textured_mesh_from_text(
         if target_face_count is not None:
             simplified_path = base_path + "_preprocessed.glb"
             try:
-                simplified_path = simplify_mesh_and_rewrap(untextured_path, simplified_path, target_face_count)
+                simplified_path = simplify_mesh_and_rewrap(
+                    untextured_path, simplified_path, target_face_count
+                )
                 mesh_for_paint = simplified_path
                 use_remesh = False
             except Exception as e:
-                logger.warning(f"⚠️ Не удалось упростить и переобернуть меш: {e}. Продолжаем с исходным.")
-        # если пользователь отключает ремешинг, но не указал упрощения,
-        # выполняем повторную UV-развёртку исходного меша
-        elif not use_remesh:
-            try:
-                import trimesh  # type: ignore[import-not-found]
+                print(
+                    f"⚠️ Не удалось упростить и переобернуть меш: {e}. Продолжаем с исходным."
+                )
+        else:
+            # если пользователь отключает ремешинг, но не указал упрощения,
+            # выполняем повторную UV-развёртку исходного меша
+            if not use_remesh:
+                try:
+                    import trimesh  # type: ignore
+                    from hy3dpaint.utils.uvwrap_utils import mesh_uv_wrap
 
-                mesh_uv_wrap = _try_import_mesh_uv_wrap()
-
-                mesh_tmp: Any = trimesh.load(untextured_path)
-                if callable(mesh_uv_wrap):
-                    mesh_tmp = mesh_uv_wrap(mesh_tmp)  # type: ignore[misc]
-                mesh_tmp.export(untextured_path)
-                logger.info("🔁 Выполнена повторная UV-развёртка исходного меша")
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при повторной UV-развёртке: {e}")
+                    mesh_tmp = trimesh.load(untextured_path)
+                    mesh_tmp = mesh_uv_wrap(mesh_tmp)
+                    mesh_tmp.export(untextured_path)
+                    print("🔁 Выполнена повторная UV-развёртка исходного меша")
+                except Exception as e:
+                    print(f"⚠️ Ошибка при повторной UV-развёртке: {e}")
 
         desired_ext = ext.lower()
         obj_output_path = base_path + ".obj"
@@ -722,13 +655,6 @@ def generate_textured_mesh_from_text(
             output_mesh_path=obj_output_path,
             use_remesh=use_remesh,
         )
-        # Проверяем, что OBJ действительно создан
-        if not os.path.exists(obj_output_path):
-            if isinstance(output_mesh_path, str) and os.path.exists(output_mesh_path):
-                obj_output_path = output_mesh_path
-            else:
-                logger.error(f"❌ Paint pipeline не создал OBJ: {obj_output_path}. Возврат без результата.")
-                return False
         # Исправляем пути к текстурам
         fix_texture_paths(obj_output_path)
 
@@ -742,7 +668,7 @@ def generate_textured_mesh_from_text(
             не помогает — копируем OBJ как GLB.
             """
             try:
-                import bpy  # type: ignore[import-not-found]
+                import bpy  # type: ignore
 
                 bpy.ops.object.select_all(action="SELECT")
                 bpy.ops.object.delete(use_global=False)
@@ -753,32 +679,36 @@ def generate_textured_mesh_from_text(
                 else:
                     bpy.ops.import_scene.obj(filepath=obj_output_path)
 
-                bpy.ops.export_scene.gltf(filepath=final_glb_path, use_active_scene=True)
-                logger.info(f"✅ OBJ конвертирован в GLB через Blender: {final_glb_path}")
+                bpy.ops.export_scene.gltf(
+                    filepath=final_glb_path, use_active_scene=True
+                )
+                print(f"✅ OBJ конвертирован в GLB через Blender: {final_glb_path}")
             except Exception:
                 try:
-                    import trimesh  # type: ignore[import-not-found]
+                    import trimesh  # type: ignore
 
-                    mesh: Any = trimesh.load(obj_output_path)
+                    mesh = trimesh.load(obj_output_path)
                     mesh.export(final_glb_path)
-                    logger.info(f"✅ OBJ конвертирован в GLB через trimesh: {final_glb_path}")
+                    print(f"✅ OBJ конвертирован в GLB через trimesh: {final_glb_path}")
                 except Exception as e:
-                    logger.warning(f"⚠️ Не удалось конвертировать OBJ в GLB: {e}. Оставляем OBJ в качестве результата.")
+                    print(
+                        f"⚠️ Не удалось конвертировать OBJ в GLB: {e}. Оставляем OBJ в качестве результата."
+                    )
                     import shutil
 
                     shutil.copy(obj_output_path, final_glb_path)
 
         obj_path = obj_output_path
-        logger.info(f"✅ Текстурированный OBJ сохранен: {obj_path}")
+        logger.info("✅ Текстурированный OBJ сохранен: %s", obj_path)
         if desired_ext == ".glb":
-            logger.info(f"✅ Текстурированный GLB сохранен: {final_glb_path}")
+            logger.info("✅ Текстурированный GLB сохранен: %s", final_glb_path)
         return True
 
     except torch.cuda.OutOfMemoryError:
         logger.exception("❌ Недостаточно VRAM для генерации")
         return False
-    except Exception:
-        logger.exception("❌ Ошибка генерации")
+    except Exception as e:
+        logger.exception("❌ Ошибка генерации: %s", e)
         return False
     finally:
         clear_memory()
@@ -797,7 +727,7 @@ def fix_texture_paths(mesh_path: str):
     """
     mtl_path = os.path.splitext(mesh_path)[0] + ".mtl"
     if not os.path.exists(mtl_path):
-        logger.warning(f"⚠️ Файл .mtl не найден: {mtl_path}")
+        print(f"⚠️ Файл .mtl не найден: {mtl_path}")
         return
 
     base_path, base_name = (
@@ -814,47 +744,55 @@ def fix_texture_paths(mesh_path: str):
             import shutil
 
             shutil.copy(diffuse_original, diffuse_albedo)
-            logger.info(f"✅ Скопирована diffuse‑текстура: {diffuse_albedo}")
-        except Exception:
-            logger.exception("⚠️ Не удалось скопировать diffuse‑текстуру")
+            print(f"✅ Скопирована diffuse‑текстура: {diffuse_albedo}")
+        except Exception as e:
+            print(f"⚠️ Не удалось скопировать diffuse‑текстуру: {e}")
 
     # Читаем содержимое .mtl файла
-    try:
-        with open(mtl_path) as f:
-            content = f.read()
-    except Exception:
-        logger.exception(f"⚠️ Не удалось прочитать {mtl_path}")
-        return
+    with open(mtl_path, "r") as f:
+        content = f.read()
 
-    # Обновляем map_Kd, если он указывает на исходную diffuse‑текстуру (.jpg или .png)
-    for ext in (".jpg", ".png"):
-        key = f"map_Kd {base_name}{ext}"
-        if key in content:
-            content = content.replace(key, f"map_Kd {base_name}_albedo.jpg")
-            break
+    # Обновляем map_Kd, если он указывает на исходную diffuse‑текстуру
+    if f"map_Kd {base_name}.jpg" in content:
+        content = content.replace(
+            f"map_Kd {base_name}.jpg", f"map_Kd {base_name}_albedo.jpg"
+        )
 
     # Записываем обновлённый файл
-    try:
-        with open(mtl_path, "w") as f:
-            f.write(content)
-    except Exception:
-        logger.exception(f"⚠️ Не удалось записать {mtl_path}")
+    with open(mtl_path, "w") as f:
+        f.write(content)
 
-    logger.info(f"✅ Пути к текстурам исправлены в {mtl_path}")
+    logger.info("✅ Пути к текстурам исправлены в %s", mtl_path)
 
 
-def convert_glb_to_obj_with_textures(glb_path: str, obj_path: str | None = None):
-    """Конвертирует GLB файл в OBJ с правильными текстурами"""
+from typing import Optional
+
+
+def convert_glb_to_obj_with_textures(glb_path: str, obj_path: Optional[str] = None) -> Optional[str]:
+    """Конвертирует GLB файл в OBJ с правильными текстурами.
+
+    Args:
+        glb_path (str): Путь к GLB/GLTF файлу.
+        obj_path (Optional[str]): Путь к результирующему OBJ, если None — авто.
+
+    Returns:
+        Optional[str]: Путь к OBJ или None при неудаче.
+    """
     if obj_path is None:
         obj_path = os.path.splitext(glb_path)[0] + ".obj"
 
-    # 1) Попытка через Blender
     try:
-        import bpy  # type: ignore[import-not-found]
+        # Пробуем использовать Blender для конвертации
+        import bpy  # type: ignore
 
+        # Очищаем сцену
         bpy.ops.object.select_all(action="SELECT")
         bpy.ops.object.delete(use_global=False)
+
+        # Импортируем GLB
         bpy.ops.import_scene.gltf(filepath=glb_path)
+
+        # Экспортируем в OBJ
         bpy.ops.export_scene.obj(
             filepath=obj_path,
             use_selection=False,
@@ -864,8 +802,10 @@ def convert_glb_to_obj_with_textures(glb_path: str, obj_path: str | None = None)
             use_uvs=True,
         )
 
+        # Создаем .mtl файл с правильными путями к текстурам
         base_name = os.path.splitext(os.path.basename(obj_path))[0]
         mtl_path = os.path.splitext(obj_path)[0] + ".mtl"
+
         mtl_content = (
             "newmtl Material\n"
             "Kd 0.8 0.8 0.8\n"
@@ -877,57 +817,70 @@ def convert_glb_to_obj_with_textures(glb_path: str, obj_path: str | None = None)
             f"map_Pm {base_name}_metallic.jpg\n"
             f"map_Pr {base_name}_roughness.jpg\n"
         )
+
         with open(mtl_path, "w") as f:
             f.write(mtl_content)
+
         logger.info("✅ GLB конвертирован в OBJ через Blender: %s", obj_path)
-        logger.info("✅ Создан .mtl файл: %s", mtl_path)
+        logger.info("✅ Создан .mtл файл: %s", mtl_path)
+
         return obj_path
+
     except ImportError:
-        logger.warning("⚠️ Blender недоступен, пробуем trimesh...")
-    except Exception:
-        logger.exception("⚠️ Ошибка Blender, пробуем trimesh...")
-
-    # 2) Fallback через trimesh
-    try:
-        import trimesh  # type: ignore[import-not-found]
-
-        mesh: Any
+        logger.warning("⚠️ Blender Python модуль недоступен, используем trimesh...")
         try:
-            mesh = trimesh.load(glb_path)
-        except Exception:
-            mesh = trimesh.load(glb_path, file_type="obj")
-        mesh.export(obj_path)
+            import trimesh  # type: ignore
 
-        base_name = os.path.splitext(os.path.basename(obj_path))[0]
-        mtl_path = os.path.splitext(obj_path)[0] + ".mtl"
-        mtl_content = (
-            "newmtl Material\n"
-            "Kd 0.8 0.8 0.8\n"
-            "Ke 0.0 0.0 0.0\n"
-            "Ni 1.5\n"
-            "d 1.0\n"
-            "illum 2\n"
-            f"map_Kd {base_name}_albedo.jpg\n"
-            f"map_Pm {base_name}_metallic.jpg\n"
-            f"map_Pr {base_name}_roughness.jpg\n"
-        )
-        with open(mtl_path, "w") as f:
-            f.write(mtl_content)
-        logger.info("✅ GLB конвертирован в OBJ через trimesh: %s", obj_path)
-        logger.info("✅ Создан .mtl файл: %s", mtl_path)
-        return obj_path
-    except ImportError:
-        logger.warning("⚠️ trimesh не установлен. Устанавливаем...")
-        try:
-            import subprocess
+            # Загружаем GLB или OBJ файл. Если загружать как GLB не удаётся,
+            # попробуем загрузить как OBJ. Это устраняет ошибку 'incorrect header'.
+            try:
+                mesh = trimesh.load(glb_path)
+            except Exception:
+                # Файл может иметь расширение .glb, но фактически быть OBJ
+                mesh = trimesh.load(glb_path, file_type="obj")
 
-            subprocess.run(["uv", "add", "trimesh"], check=True)
-            logger.info("✅ trimesh установлен. Попробуйте снова.")
-        except Exception:
-            logger.exception("❌ Ошибка установки trimesh")
-        return None
-    except Exception:
-        logger.exception("❌ Ошибка конвертации через trimesh")
+            # Экспортируем в OBJ
+            mesh.export(obj_path)
+
+            # Создаем .mtl файл с правильными путями к текстурам
+            base_name = os.path.splitext(os.path.basename(obj_path))[0]
+            mtl_path = os.path.splitext(obj_path)[0] + ".mtl"
+
+            mtl_content = (
+                "newmtl Material\n"
+                "Kd 0.8 0.8 0.8\n"
+                "Ke 0.0 0.0 0.0\n"
+                "Ni 1.5\n"
+                "d 1.0\n"
+                "illum 2\n"
+                f"map_Kd {base_name}_albedo.jpg\n"
+                f"map_Pm {base_name}_metallic.jpg\n"
+                f"map_Pr {base_name}_roughness.jpg\n"
+            )
+
+            with open(mtl_path, "w") as f:
+                f.write(mtl_content)
+
+            logger.info("✅ GLB конвертирован в OBJ через trimesh: %s", obj_path)
+            logger.info("✅ Создан .mtл файл: %s", mtl_path)
+
+            return obj_path
+
+        except ImportError:
+            logger.warning("⚠️ trimesh не установлен. Устанавливаем...")
+            try:
+                import subprocess
+
+                subprocess.run(["uv", "add", "trimesh"], check=True)
+                logger.info("✅ trimesh установлен. Попробуйте снова.")
+            except Exception as e:
+                logger.error("❌ Ошибка установки trimesh: %s", e)
+            return None
+        except Exception as e:
+            logger.exception("❌ Ошибка конвертации через trimesh: %s", e)
+            return None
+    except Exception as e:
+        logger.exception("❌ Ошибка конвертации через Blender: %s", e)
         return None
 
 
@@ -952,7 +905,9 @@ def main():
 
         if choice == "1":
             print("\n📋 Операция 1: Генерация меша из изображения")
-            success = generate_mesh_from_image("assets/test_image.jpg", "output/test_mesh.glb")
+            success = generate_mesh_from_image(
+                "assets/test_image.jpg", "output/test_mesh.glb"
+            )
             if success:
                 print("✅ Операция завершена успешно!")
             else:
@@ -960,7 +915,9 @@ def main():
 
         elif choice == "2":
             print("\n📋 Операция 2: Генерация текстурированного меша из изображения")
-            success = generate_textured_mesh_from_image("assets/test_image.jpg", "output/test_mesh_textured.glb")
+            success = generate_textured_mesh_from_image(
+                "assets/test_image.jpg", "output/test_mesh_textured.glb"
+            )
             if success:
                 print("✅ Операция завершена успешно!")
             else:
@@ -978,7 +935,9 @@ def main():
         elif choice == "4":
             print("\n📋 Операция 4: Генерация текстурированного меша из текста")
             prompt = "(masterpiece), (best quality), game asset, a single longsword, front view, orthographic, 3d model, 3d render, hyper detailed, clean, ((white background)), ((isolated on white)), professional, studio lighting, sharp focus"
-            success = generate_textured_mesh_from_text(prompt, "output/sword_textured.glb")
+            success = generate_textured_mesh_from_text(
+                prompt, "output/sword_textured.glb"
+            )
             if success:
                 print("✅ Операция завершена успешно!")
             else:
